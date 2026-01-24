@@ -7,8 +7,8 @@ import requests
 
 # ========== 加载环境 ==========
 load_dotenv()
-BOT_TOKEN = os.getenv(8387440038:AAHdaKFbhpYJSs2tYuXgycQdekt5ExIEauI)
-OWNER_ID  = os.getenv(5493266423)  # 可选：你的 Telegram ID（字符串），拥有永久管理员权限
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OWNER_ID  = os.getenv("OWNER_ID)  # 可选：你的 Telegram ID（字符串），拥有永久管理员权限
 
 # ========== 记账核心状态（多群组支持）==========
 DATA_DIR = Path("./data")
