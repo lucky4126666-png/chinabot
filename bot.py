@@ -1,99 +1,126 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import logging
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+)
 
+# ================== CONFIG ==================
 BOT_TOKEN = "8234123060:AAEtxTPA0TNBgBgQGYKY2BRRMhMOfNp3TJ4"
 OWNER_ID = 8572604188
 
+# Chủ bot tự set dữ liệu tại đây
+KEYWORD_DATA = {
+    "hello": {
+        "text": "👋 Xin chào! Đây là nội dung do chủ bot cài đặt.",
+        "image": None,  # hoặc link ảnh
+    },
+    "test": {
+        "text": "✅ Đây là tin nhắn test",
+        "image": "https://picsum.photos/400/300",
+    },
+}
 
-def is_owner(update: Update):
-    return update.effective_user and update.effective_user.id == OWNER_ID
+# ================== LOG ==================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        await update.message.reply_text("无权限")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("反应自动回复", callback_data="auto_reply")],
-        [InlineKeyboardButton("群管理设置", callback_data="group_setting")],
-        [InlineKeyboardButton("系统设置", callback_data="system_setting")]
-    ]
-
-    await update.message.reply_text(
-        "管理菜单",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+# ================== MENU ==================
+def start_menu():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("反应自动回复", callback_data="auto_reply")],
+            [InlineKeyboardButton("群管理设置", callback_data="group_setting")],
+            [InlineKeyboardButton("系统设置", callback_data="system_setting")],
+        ]
     )
 
+def auto_reply_menu():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("关键词列表", callback_data="keyword_list")],
+            [InlineKeyboardButton("添加关键词", callback_data="keyword_add")],
+            [InlineKeyboardButton("⬅ 返回", callback_data="back_start")],
+        ]
+    )
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== HANDLERS ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Bạn không có quyền sử dụng bot này.")
+        return
+
+    await update.message.reply_text(
+        "🤖 Bot quản lý phản hồi tự động",
+        reply_markup=start_menu(),
+    )
+
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if not is_owner(update):
-        await query.edit_message_text("无权限")
+    if query.data == "auto_reply":
+        await query.edit_message_text(
+            "⚙️ Phản hồi tự động",
+            reply_markup=auto_reply_menu(),
+        )
+
+    elif query.data == "keyword_list":
+        text = "📄 **Danh sách từ khóa:**\n\n"
+        for k in KEYWORD_DATA.keys():
+            text += f"- `{k}`\n"
+        await query.edit_message_text(text, parse_mode="Markdown")
+
+    elif query.data == "group_setting":
+        await query.edit_message_text("👥 Cài đặt quản lý nhóm (đang phát triển)")
+
+    elif query.data == "system_setting":
+        await query.edit_message_text("⚙️ Cài đặt hệ thống (đang phát triển)")
+
+    elif query.data == "back_start":
+        await query.edit_message_text(
+            "🤖 Bot quản lý phản hồi tự động",
+            reply_markup=start_menu(),
+        )
+
+# ================== AUTO REPLY ==================
+async def keyword_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
         return
 
-    data = query.data
+    text = update.message.text.lower()
 
-    if data == "auto_reply":
-        keyboard = [
-            [InlineKeyboardButton("关键词列表", callback_data="keyword_list")],
-            [InlineKeyboardButton("添加关键词", callback_data="keyword_add")],
-            [InlineKeyboardButton("返回", callback_data="back_main")]
-        ]
-        await query.edit_message_text("反应自动回复", reply_markup=InlineKeyboardMarkup(keyboard))
+    for keyword, data in KEYWORD_DATA.items():
+        if keyword in text:
+            if data["image"]:
+                await update.message.reply_photo(
+                    photo=data["image"],
+                    caption=data["text"],
+                )
+            else:
+                await update.message.reply_text(data["text"])
+            break
 
-    elif data == "keyword_list":
-        keyboard = [
-            [InlineKeyboardButton("关键词详情", callback_data="keyword_detail")],
-            [InlineKeyboardButton("返回", callback_data="auto_reply")]
-        ]
-        await query.edit_message_text("关键词列表", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "keyword_detail":
-        keyboard = [
-            [InlineKeyboardButton("修改关键词", callback_data="kw_edit")],
-            [InlineKeyboardButton("回复内容", callback_data="kw_text")],
-            [InlineKeyboardButton("图片", callback_data="kw_image")],
-            [InlineKeyboardButton("按钮", callback_data="kw_button")],
-            [InlineKeyboardButton("预览", callback_data="kw_preview")],
-            [InlineKeyboardButton("删除", callback_data="kw_delete")],
-            [InlineKeyboardButton("返回", callback_data="keyword_list")]
-        ]
-        await query.edit_message_text("关键词详情", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "group_setting":
-        keyboard = [
-            [InlineKeyboardButton("已绑定群组", callback_data="group_list")],
-            [InlineKeyboardButton("绑定新群", callback_data="group_bind")],
-            [InlineKeyboardButton("返回", callback_data="back_main")]
-        ]
-        await query.edit_message_text("群管理设置", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "system_setting":
-        keyboard = [
-            [InlineKeyboardButton("语言设置", callback_data="lang_setting")],
-            [InlineKeyboardButton("权限设置", callback_data="permission_setting")],
-            [InlineKeyboardButton("返回", callback_data="back_main")]
-        ]
-        await query.edit_message_text("系统设置", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif data == "back_main":
-        keyboard = [
-            [InlineKeyboardButton("反应自动回复", callback_data="auto_reply")],
-            [InlineKeyboardButton("群管理设置", callback_data="group_setting")],
-            [InlineKeyboardButton("系统设置", callback_data="system_setting")]
-        ]
-        await query.edit_message_text("管理菜单", reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+# ================== MAIN ==================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.run_polling()
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(menu_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, keyword_reply))
+
+    print("🤖 Bot is running...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
