@@ -1,182 +1,202 @@
-import os
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
+import os, json, re, sqlite3
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 8572604188
+OWNER_ID = int(os.getenv("OWNER_ID"))
 
-KEYWORDS = {}
-BOUND_GROUPS = set()
-SETTINGS = {"lang": "CN"}
+# ---------- DB ----------
+db = sqlite3.connect("data.db", check_same_thread=False)
+cur = db.cursor()
 
-# ================= UTILS =================
-def is_owner(update: Update):
+cur.execute("""
+CREATE TABLE IF NOT EXISTS keywords(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ keyword TEXT,
+ match_type TEXT,
+ text TEXT,
+ photo TEXT,
+ buttons TEXT,
+ groups TEXT
+)
+""")
+db.commit()
+
+# ---------- HELPERS ----------
+def owner(update):
     return update.effective_user.id == OWNER_ID
 
-def main_menu():
+def menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("反应自动回复", callback_data="auto")],
-        [InlineKeyboardButton("群管理设置", callback_data="group")],
-        [InlineKeyboardButton("系统设置", callback_data="system")]
+        [InlineKeyboardButton("📌 Quản lý từ khóa", callback_data="kw_menu")],
+        [InlineKeyboardButton("⚙️ Cài đặt", callback_data="settings")]
     ])
 
-# ================= START =================
+# ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
+    if not owner(update):
         return
-    await update.message.reply_text(
-        "管理菜单",
-        reply_markup=main_menu()
-    )
+    await update.message.reply_text("⚙️ MENU BOT", reply_markup=menu())
 
-# ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+# ---------- KEYWORD MENU ----------
+async def kw_menu(update, context):
+    q = update.callback_query; await q.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Danh sách từ khóa", callback_data="kw_list")],
+        [InlineKeyboardButton("➕ Thêm từ khóa", callback_data="kw_add")],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="start")]
+    ])
+    await q.edit_message_text("📌 Quản lý từ khóa", reply_markup=kb)
 
-    if not is_owner(update):
+# ---------- LIST ----------
+async def kw_list(update, context):
+    q = update.callback_query; await q.answer()
+    rows = cur.execute("SELECT id, keyword FROM keywords").fetchall()
+
+    if not rows:
+        await q.edit_message_text("⚠️ Chưa có từ khóa")
         return
 
-    data = q.data
+    kb = [[InlineKeyboardButton(k, callback_data=f"kw_view:{i}")]
+          for i, k in rows]
+    kb.append([InlineKeyboardButton("⬅️", callback_data="kw_menu")])
+    await q.edit_message_text("📋 Danh sách", reply_markup=InlineKeyboardMarkup(kb))
 
-    # ===== AUTO REPLY =====
-    if data == "auto":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("关键词列表", callback_data="kw_list")],
-            [InlineKeyboardButton("添加关键词", callback_data="kw_add")],
-            [InlineKeyboardButton("返回", callback_data="back")]
-        ])
-        await q.edit_message_text("反应自动回复", reply_markup=kb)
+# ---------- ADD ----------
+async def kw_add(update, context):
+    q = update.callback_query; await q.answer()
+    context.user_data.clear()
+    context.user_data["step"] = "keyword"
+    await q.edit_message_text("✏️ Gửi từ khóa")
 
-    elif data == "kw_list":
-        if not KEYWORDS:
-            await q.edit_message_text("暂无关键词", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("返回", callback_data="auto")]
-            ]))
-            return
-
-        kb = [[InlineKeyboardButton(k, callback_data=f"kw:{k}")] for k in KEYWORDS]
-        kb.append([InlineKeyboardButton("返回", callback_data="auto")])
-        await q.edit_message_text("关键词列表", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data.startswith("kw:"):
-        kw = data.split(":", 1)[1]
-        context.user_data["current_kw"] = kw
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("修改关键词", callback_data="edit_kw")],
-            [InlineKeyboardButton("回复内容", callback_data="edit_text")],
-            [InlineKeyboardButton("图片", callback_data="edit_photo")],
-            [InlineKeyboardButton("按钮", callback_data="edit_button")],
-            [InlineKeyboardButton("预览", callback_data="preview")],
-            [InlineKeyboardButton("删除", callback_data="delete")],
-            [InlineKeyboardButton("返回", callback_data="kw_list")]
-        ])
-        await q.edit_message_text(f"关键词详情：{kw}", reply_markup=kb)
-
-    elif data == "kw_add":
-        context.user_data["step"] = "new_kw"
-        await q.message.reply_text("请输入关键词")
-
-    elif data == "preview":
-        kw = context.user_data["current_kw"]
-        d = KEYWORDS[kw]
-
-        kb = None
-        if d["buttons"]:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(b["text"], url=b["url"])] for b in d["buttons"]
-            ])
-
-        if d["photo"]:
-            await q.message.reply_photo(d["photo"], caption=d["text"], reply_markup=kb)
-        else:
-            await q.message.reply_text(d["text"], reply_markup=kb)
-
-    elif data == "delete":
-        kw = context.user_data["current_kw"]
-        KEYWORDS.pop(kw, None)
-        await q.edit_message_text("已删除", reply_markup=main_menu())
-
-    elif data == "group":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("已绑定群组", callback_data="group_list")],
-            [InlineKeyboardButton("绑定新群", callback_data="group_bind")],
-            [InlineKeyboardButton("返回", callback_data="back")]
-        ])
-        await q.edit_message_text("群管理设置", reply_markup=kb)
-
-    elif data == "system":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("语言设置", callback_data="lang")],
-            [InlineKeyboardButton("权限设置", callback_data="perm")],
-            [InlineKeyboardButton("返回", callback_data="back")]
-        ])
-        await q.edit_message_text("系统设置", reply_markup=kb)
-
-    elif data == "back":
-        await q.edit_message_text("管理菜单", reply_markup=main_menu())
-
-# ================= MESSAGE (PRIVATE SETUP) =================
-async def private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
+# ---------- PRIVATE FLOW ----------
+async def private_msg(update, context):
+    if not owner(update):
         return
 
     step = context.user_data.get("step")
-    msg = update.message.text
 
-    if step == "new_kw":
-        KEYWORDS[msg] = {"text": "", "photo": None, "buttons": []}
-        context.user_data["current_kw"] = msg
-        context.user_data["step"] = "new_text"
-        await update.message.reply_text("请输入回复内容")
-        return
+    if step == "keyword":
+        context.user_data["keyword"] = update.message.text
+        context.user_data["step"] = "text"
+        await update.message.reply_text("📝 Gửi nội dung trả lời")
 
-    if step == "new_text":
-        kw = context.user_data["current_kw"]
-        KEYWORDS[kw]["text"] = msg
-        context.user_data.clear()
-        await update.message.reply_text("关键词创建完成")
+    elif step == "text":
+        context.user_data["text"] = update.message.text
+        context.user_data["step"] = "photo"
+        await update.message.reply_text("🖼️ Gửi ảnh (hoặc /skip)")
 
-# ================= GROUP AUTO REPLY =================
-async def group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    elif step == "photo":
+        if update.message.photo:
+            context.user_data["photo"] = update.message.photo[-1].file_id
+        else:
+            context.user_data["photo"] = None
+        context.user_data["step"] = "buttons"
+        await update.message.reply_text("🔘 Gửi nút: text|url (mỗi dòng 1 nút) hoặc /skip")
+
+    elif step == "buttons":
+        btns = []
+        if update.message.text != "/skip":
+            for line in update.message.text.splitlines():
+                t, u = line.split("|")
+                btns.append({"text": t, "url": u})
+
+        context.user_data["buttons"] = btns
+        context.user_data["step"] = "preview"
+
+        kb = None
+        if btns:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in btns])
+
+        if context.user_data["photo"]:
+            await update.message.reply_photo(
+                context.user_data["photo"],
+                caption=context.user_data["text"],
+                reply_markup=kb
+            )
+        else:
+            await update.message.reply_text(context.user_data["text"], reply_markup=kb)
+
+        await update.message.reply_text(
+            "👀 Preview\nLưu?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Lưu", callback_data="kw_save"),
+                 InlineKeyboardButton("❌ Hủy", callback_data="start")]
+            ])
+        )
+
+# ---------- SAVE ----------
+async def kw_save(update, context):
+    q = update.callback_query; await q.answer()
+    d = context.user_data
+
+    cur.execute("""
+    INSERT INTO keywords(keyword, match_type, text, photo, buttons, groups)
+    VALUES (?,?,?,?,?,?)
+    """, (
+        d["keyword"], "exact", d["text"],
+        d["photo"], json.dumps(d["buttons"]), "*"
+    ))
+    db.commit()
+    context.user_data.clear()
+    await q.edit_message_text("✅ Đã lưu")
+
+# ---------- GROUP RESPONSE ----------
+async def group_msg(update, context):
     text = update.message.text
-    if text not in KEYWORDS:
-        return
+    gid = str(update.message.chat_id)
 
-    d = KEYWORDS[text]
-    kb = None
-    if d["buttons"]:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(b["text"], url=b["url"])] for b in d["buttons"]
-        ])
+    rows = cur.execute("SELECT * FROM keywords").fetchall()
 
-    if d["photo"]:
-        await update.message.reply_photo(d["photo"], caption=d["text"], reply_markup=kb)
-    else:
-        await update.message.reply_text(d["text"], reply_markup=kb)
+    for _, kw, mtype, rtext, photo, btns, groups in rows:
+        if groups != "*" and gid not in groups.split(","):
+            continue
 
-# ================= RUN =================
+        ok = False
+        if mtype == "exact" and text == kw: ok = True
+        if mtype == "contains" and kw in text: ok = True
+        if mtype == "startswith" and text.startswith(kw): ok = True
+        if mtype == "regex" and re.search(kw, text): ok = True
+
+        if ok:
+            kb = None
+            btns = json.loads(btns)
+            if btns:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in btns])
+
+            if photo:
+                await update.message.reply_photo(photo, caption=rtext, reply_markup=kb)
+            else:
+                await update.message.reply_text(rtext, reply_markup=kb)
+            break
+
+# ---------- CALLBACK ----------
+async def callbacks(update, context):
+    d = update.callback_query.data
+
+    if d == "start":
+        await start(update, context)
+    elif d == "kw_menu":
+        await kw_menu(update, context)
+    elif d == "kw_list":
+        await kw_list(update, context)
+    elif d == "kw_add":
+        await kw_add(update, context)
+    elif d == "kw_save":
+        await kw_save(update, context)
+
+# ---------- MAIN ----------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, private_handler))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, group_reply))
+    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.ALL, private_msg))
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, group_msg))
 
-    print("Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
