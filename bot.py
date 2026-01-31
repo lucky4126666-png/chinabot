@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ================== CONFIG ==================
-BOT_TOKEN = "8234123060:AAEtxTPA0TNBgBgQGYKY2BRRMhMOfNp3TJ4"
+BOT_TOKEN = "8582300335:AAHWQjiBrWXYn-xsJ6TIhXxCrihKg-AEHfw"
 OWNER_ID = 8572604188
 
 # Chủ bot tự set dữ liệu tại đây
