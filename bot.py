@@ -3,251 +3,238 @@ import sqlite3
 from telegram import (
     Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup
+    InlineKeyboardMarkup,
 )
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
     ContextTypes,
-    filters
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
 )
 
-# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 8572604188   # 👈 chủ bot
+OWNER_ID = int(os.getenv("OWNER_ID"))
 
 # ================= DB =================
-conn = sqlite3.connect("bot.db", check_same_thread=False)
+conn = sqlite3.connect("data.db", check_same_thread=False)
 cur = conn.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-)
-""")
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     keyword TEXT,
-    mode TEXT,
     reply_text TEXT,
     reply_image TEXT,
-    reply_buttons TEXT,
-    group_id INTEGER
+    reply_buttons TEXT
 )
 """)
-
-cur.execute(
-    "INSERT OR IGNORE INTO settings (key,value) VALUES ('lang','vi')"
-)
 conn.commit()
 
-# ================= LANG =================
-TEXT = {
-    "vi": {
-        "start": "📌 MENU CHÍNH",
-        "kw_manage": "📌 Quản lý từ khóa",
-        "kw_add": "➕ Thêm từ khóa",
-        "kw_list": "📋 Danh sách từ khóa",
-        "settings": "⚙️ Cài đặt",
-        "lang": "🌐 Ngôn ngữ",
-        "only_owner": "❌ Chỉ chủ bot mới dùng",
-        "enter_kw": "✏️ Gửi từ khóa",
-        "enter_reply": "💬 Gửi nội dung trả lời",
-        "enter_buttons": "🔘 Gửi nút (hoặc /skip)",
-        "saved": "✅ Đã lưu",
-        "preview": "👁 Xem trước",
-        "delete": "🗑 Xóa",
-    },
-    "zh": {
-        "start": "📌 主菜单",
-        "kw_manage": "📌 关键词管理",
-        "kw_add": "➕ 添加关键词",
-        "kw_list": "📋 关键词列表",
-        "settings": "⚙️ 设置",
-        "lang": "🌐 语言",
-        "only_owner": "❌ 仅限机器人主人",
-        "enter_kw": "✏️ 发送关键词",
-        "enter_reply": "💬 发送回复内容",
-        "enter_buttons": "🔘 发送按钮（或 /skip）",
-        "saved": "✅ 已保存",
-        "preview": "👁 预览",
-        "delete": "🗑 删除",
-    }
-}
+# ================= UTILS =================
+def is_owner(update: Update):
+    return update.effective_user.id == OWNER_ID
 
-def get_lang():
-    cur.execute("SELECT value FROM settings WHERE key='lang'")
-    return cur.fetchone()[0]
-
-def t(key):
-    return TEXT[get_lang()].get(key, key)
-
-# ================= BUTTON PARSE =================
-def parse_buttons(raw: str):
-    rows = []
+def build_buttons(raw: str):
+    if not raw:
+        return None
+    keyboard = []
     for line in raw.split("\n"):
-        btns = []
+        row = []
         for part in line.split("&&"):
-            if "-" in part:
-                text, url = part.split("-", 1)
-                btns.append(InlineKeyboardButton(text.strip(), url=url.strip()))
-        if btns:
-            rows.append(btns)
-    return InlineKeyboardMarkup(rows) if rows else None
+            if "-" not in part:
+                continue
+            text, url = part.split("-", 1)
+            row.append(
+                InlineKeyboardButton(
+                    text=text.strip(),
+                    url=url.strip()
+                )
+            )
+        if row:
+            keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
 
-# ================= /START =================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if not is_owner(update):
         return
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("kw_manage"), callback_data="kw_menu")],
-        [InlineKeyboardButton(t("settings"), callback_data="settings")]
-    ])
-    await update.message.reply_text(t("start"), reply_markup=kb)
+
+    await update.message.reply_text(
+        "📌 QUẢN LÝ TỪ KHÓA\n\n"
+        "1️⃣ Gửi từ khóa\n"
+        "2️⃣ Gửi nội dung trả lời\n"
+        "3️⃣ Gửi ảnh (hoặc /skip)\n"
+        "4️⃣ Gửi nút inline (hoặc /skip)\n\n"
+        "📋 /list – Danh sách từ khóa"
+    )
+    context.user_data.clear()
+    context.user_data["step"] = "keyword"
+
+# ================= FLOW ADD =================
+async def owner_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
+
+    step = context.user_data.get("step")
+
+    # STEP 1: keyword
+    if step == "keyword":
+        context.user_data["keyword"] = update.message.text.strip()
+        context.user_data["step"] = "text"
+        await update.message.reply_text("✏️ Gửi nội dung trả lời")
+        return
+
+    # STEP 2: reply text
+    if step == "text":
+        context.user_data["reply_text"] = update.message.text
+        context.user_data["step"] = "image"
+        await update.message.reply_text("🖼 Gửi ảnh (hoặc /skip)")
+        return
+
+    # STEP 3: image
+    if step == "image":
+        if update.message.photo:
+            context.user_data["reply_image"] = update.message.photo[-1].file_id
+        elif update.message.text == "/skip":
+            context.user_data["reply_image"] = ""
+        else:
+            context.user_data["reply_image"] = update.message.text.strip()
+        context.user_data["step"] = "buttons"
+        await update.message.reply_text(
+            "🔘 Gửi nút inline\n"
+            "VD:\n"
+            "Telegram - https://t.me/xxx && Website - https://abc.com\n"
+            "Hoặc /skip"
+        )
+        return
+
+    # STEP 4: buttons
+    if step == "buttons":
+        if update.message.text == "/skip":
+            context.user_data["reply_buttons"] = ""
+        else:
+            context.user_data["reply_buttons"] = update.message.text
+
+        cur.execute(
+            "INSERT INTO keywords (keyword, reply_text, reply_image, reply_buttons) VALUES (?,?,?,?)",
+            (
+                context.user_data["keyword"],
+                context.user_data["reply_text"],
+                context.user_data.get("reply_image", ""),
+                context.user_data.get("reply_buttons", "")
+            )
+        )
+        conn.commit()
+
+        await update.message.reply_text("✅ Đã lưu từ khóa")
+        context.user_data.clear()
+
+# ================= LIST =================
+async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
+
+    cur.execute("SELECT id, keyword FROM keywords")
+    rows = cur.fetchall()
+
+    if not rows:
+        await update.message.reply_text("❌ Chưa có từ khóa")
+        return
+
+    kb = []
+    for k_id, kw in rows:
+        kb.append([
+            InlineKeyboardButton(kw, callback_data=f"view_{k_id}"),
+            InlineKeyboardButton("🗑", callback_data=f"del_{k_id}")
+        ])
+
+    await update.message.reply_text(
+        "📋 Danh sách từ khóa",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 # ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if q.from_user.id != OWNER_ID:
-        await q.answer(t("only_owner"), show_alert=True)
-        return
-
     data = q.data
 
-    if data == "kw_menu":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("kw_add"), callback_data="kw_add")],
-            [InlineKeyboardButton(t("kw_list"), callback_data="kw_list")]
-        ])
-        await q.edit_message_text(t("kw_manage"), reply_markup=kb)
-
-    elif data == "kw_add":
-        context.user_data.clear()
-        context.user_data["step"] = "kw"
-        await q.message.reply_text(t("enter_kw"))
-
-    elif data == "kw_list":
-        cur.execute("SELECT id,keyword FROM keywords")
-        rows = cur.fetchall()
-        if not rows:
-            await q.message.reply_text("Empty")
-            return
-        kb = [
-            [InlineKeyboardButton(r[1], callback_data=f"kw_{r[0]}")]
-            for r in rows
-        ]
-        await q.message.reply_text(
-            t("kw_list"),
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    elif data.startswith("kw_"):
-        kid = int(data.split("_")[1])
-        context.user_data["edit_id"] = kid
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("preview"), callback_data="preview")],
-            [InlineKeyboardButton(t("delete"), callback_data="delete")]
-        ])
-        await q.message.reply_text("Keyword", reply_markup=kb)
-
-    elif data == "delete":
-        kid = context.user_data.get("edit_id")
-        cur.execute("DELETE FROM keywords WHERE id=?", (kid,))
-        conn.commit()
-        await q.message.reply_text("Deleted")
-
-    elif data == "preview":
-        kid = context.user_data.get("edit_id")
+    # VIEW
+    if data.startswith("view_"):
+        k_id = int(data.split("_")[1])
         cur.execute(
-            "SELECT reply_text,reply_image,reply_buttons FROM keywords WHERE id=?",
-            (kid,)
+            "SELECT reply_text, reply_image, reply_buttons FROM keywords WHERE id=?",
+            (k_id,)
         )
-        r = cur.fetchone()
-        kb = parse_buttons(r[2]) if r[2] else None
-        if r[1]:
-            await q.message.reply_photo(r[1], caption=r[0], reply_markup=kb)
+        row = cur.fetchone()
+        if not row:
+            return
+
+        text, image, buttons = row
+        markup = build_buttons(buttons)
+
+        if image:
+            await q.message.reply_photo(
+                photo=image,
+                caption=text,
+                reply_markup=markup,
+                parse_mode=None
+            )
         else:
-            await q.message.reply_text(r[0], reply_markup=kb)
+            await q.message.reply_text(
+                text,
+                reply_markup=markup,
+                parse_mode=None
+            )
 
-    elif data == "settings":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="lang_vi")],
-            [InlineKeyboardButton("🇨🇳 中文", callback_data="lang_zh")]
-        ])
-        await q.edit_message_text(t("lang"), reply_markup=kb)
-
-    elif data == "lang_vi":
-        cur.execute("UPDATE settings SET value='vi' WHERE key='lang'")
+    # DELETE
+    if data.startswith("del_"):
+        k_id = int(data.split("_")[1])
+        cur.execute("DELETE FROM keywords WHERE id=?", (k_id,))
         conn.commit()
-        await q.edit_message_text("🇻🇳 OK")
+        await q.message.reply_text("🗑 Đã xóa")
 
-    elif data == "lang_zh":
-        cur.execute("UPDATE settings SET value='zh' WHERE key='lang'")
-        conn.commit()
-        await q.edit_message_text("🇨🇳 OK")
-
-# ================= MESSAGE (PRIVATE) =================
-async def private_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+# ================= GROUP AUTO REPLY =================
+async def group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
         return
 
     text = update.message.text
 
-    if context.user_data.get("step") == "kw":
-        context.user_data["keyword"] = text
-        context.user_data["step"] = "reply"
-        await update.message.reply_text(t("enter_reply"))
+    cur.execute("SELECT keyword, reply_text, reply_image, reply_buttons FROM keywords")
+    rows = cur.fetchall()
 
-    elif context.user_data.get("step") == "reply":
-        context.user_data["reply"] = text
-        context.user_data["step"] = "buttons"
-        await update.message.reply_text(t("enter_buttons"))
-
-    elif context.user_data.get("step") == "buttons":
-        buttons = None if text == "/skip" else text
-        cur.execute("""
-        INSERT INTO keywords (keyword,mode,reply_text,reply_buttons)
-        VALUES (?,?,?,?)
-        """, (
-            context.user_data["keyword"],
-            "contains",
-            context.user_data["reply"],
-            buttons
-        ))
-        conn.commit()
-        context.user_data.clear()
-        await update.message.reply_text(t("saved"))
-
-# ================= GROUP AUTO REPLY =================
-async def group_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text
-    gid = update.effective_chat.id
-
-    cur.execute("SELECT keyword,mode,reply_text,reply_image,reply_buttons FROM keywords")
-    for k, mode, text, img, btn in cur.fetchall():
-        hit = (msg == k) if mode == "exact" else (k in msg)
-        if hit:
-            kb = parse_buttons(btn) if btn else None
-            if img:
-                await update.message.reply_photo(img, caption=text, reply_markup=kb)
+    for kw, r_text, r_img, r_btn in rows:
+        if kw in text:
+            markup = build_buttons(r_btn)
+            if r_img:
+                await update.message.reply_photo(
+                    photo=r_img,
+                    caption=r_text,
+                    reply_markup=markup,
+                    parse_mode=None
+                )
             else:
-                await update.message.reply_text(text, reply_markup=kb)
+                await update.message.reply_text(
+                    r_text,
+                    reply_markup=markup,
+                    parse_mode=None
+                )
             break
 
-# ================= RUN =================
+# ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, private_msg))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, group_msg))
+    app.add_handler(CommandHandler("list", list_keywords))
+    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, owner_flow))
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS, group_reply))
+
     app.run_polling()
 
 if __name__ == "__main__":
