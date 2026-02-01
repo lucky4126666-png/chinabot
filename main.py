@@ -1,22 +1,26 @@
 import json
+import asyncio
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto
+)
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters import CommandStart
+from aiogram import Router
 import os
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
 
-# ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 8572604188
+TOKEN = os.getenv("BOT_TOKEN")  # Railway ENV
+ADMIN_ID = 8572604188           # ID của bạn
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
+
 DATA_FILE = "data.json"
 
 # ================= DATA =================
@@ -26,11 +30,18 @@ def load_data():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_data(d):
+def save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 data = load_data()
+
+# ================= FSM =================
+class Form(StatesGroup):
+    add_kw = State()
+    add_text = State()
+    add_img = State()
+    add_btn = State()
 
 # ================= MENUS =================
 def admin_menu():
@@ -41,173 +52,181 @@ def admin_menu():
 
 def keyword_menu(key):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Sửa nội dung", callback_data=f"text:{key}")],
-        [InlineKeyboardButton("🖼️ Thêm ảnh", callback_data=f"img:{key}")],
-        [InlineKeyboardButton("🔘 Thêm nút", callback_data=f"btn:{key}")],
-        [InlineKeyboardButton("👁️ Xem trước", callback_data=f"preview:{key}")],
-        [InlineKeyboardButton("🗑️ Xóa", callback_data=f"del:{key}")],
-        [InlineKeyboardButton("⬅️ Trở lại", callback_data="back")]
+        [
+            InlineKeyboardButton("✏️ Sửa nội dung", callback_data=f"text:{key}"),
+            InlineKeyboardButton("🖼️ Thêm ảnh", callback_data=f"img:{key}")
+        ],
+        [
+            InlineKeyboardButton("🔘 Thêm nút", callback_data=f"btn:{key}"),
+            InlineKeyboardButton("👁️ Xem trước", callback_data=f"preview:{key}")
+        ],
+        [
+            InlineKeyboardButton("🗑️ Xóa", callback_data=f"del:{key}")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Trở lại", callback_data="back_admin")
+        ]
     ])
 
+def keyword_list_menu():
+    rows = []
+    for k in data:
+        rows.append([InlineKeyboardButton(k, callback_data=f"open:{k}")])
+    rows.append([InlineKeyboardButton("⬅️ Trở lại", callback_data="back_admin")])
+    return InlineKeyboardMarkup(rows)
+
+def build_buttons(buttons, per_row=2):
+    rows, temp = [], []
+    for b in buttons:
+        temp.append(InlineKeyboardButton(b["text"], url=b["url"]))
+        if len(temp) == per_row:
+            rows.append(temp)
+            temp = []
+    if temp:
+        rows.append(temp)
+    return InlineKeyboardMarkup(rows)
+
 # ================= START =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != "private":
-        return
+@router.message(CommandStart())
+async def start(msg: Message):
+    if msg.chat.type == "private" and msg.from_user.id == ADMIN_ID:
+        await msg.reply("⚙️ Quản lý bot", reply_markup=admin_menu())
 
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text(
-            "⚙️ BẢNG ĐIỀU KHIỂN BOT (ADMIN)",
-            reply_markup=admin_menu()
-        )
+# ================= CALLBACK =================
+@router.callback_query(F.data == "add_kw")
+async def add_kw(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_text("✍️ Nhập từ khóa:")
+    await state.set_state(Form.add_kw)
 
-# ================= BUTTON HANDLER =================
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+@router.message(Form.add_kw)
+async def save_kw(msg: Message, state: FSMContext):
+    key = msg.text.strip()
+    data[key] = {"text": "", "images": [], "buttons": []}
+    save_data()
+    await msg.reply(f"✅ Đã tạo từ khóa: {key}", reply_markup=keyword_menu(key))
+    await state.clear()
 
-    if query.from_user.id != ADMIN_ID:
-        return
+@router.callback_query(F.data == "list_kw")
+async def list_kw(cb: CallbackQuery):
+    await cb.message.edit_text("📌 Danh sách từ khóa", reply_markup=keyword_list_menu())
 
-    cmd = query.data
+@router.callback_query(F.data.startswith("open:"))
+async def open_kw(cb: CallbackQuery):
+    key = cb.data.split(":", 1)[1]
+    await cb.message.edit_text(f"⚙️ Từ khóa: {key}", reply_markup=keyword_menu(key))
 
-    if cmd == "add_kw":
-        context.user_data["step"] = "wait_keyword"
-        await query.message.reply_text("✏️ Nhập từ khóa:")
+@router.callback_query(F.data.startswith("text:"))
+async def edit_text(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":", 1)[1]
+    await state.update_data(key=key)
+    await cb.message.edit_text("✏️ Gửi nội dung mới:")
+    await state.set_state(Form.add_text)
 
-    elif cmd == "list_kw":
-        if not data:
-            await query.message.reply_text("📭 Chưa có từ khóa")
-            return
-        for k in data:
-            await query.message.reply_text(f"🔑 {k}", reply_markup=keyword_menu(k))
+@router.message(Form.add_text)
+async def save_text(msg: Message, state: FSMContext):
+    key = (await state.get_data())["key"]
+    data[key]["text"] = msg.text
+    save_data()
+    await msg.reply("✅ Đã lưu nội dung", reply_markup=keyword_menu(key))
+    await state.clear()
 
-    elif cmd == "back":
-        await query.message.reply_text("⬅️ Quay lại", reply_markup=admin_menu())
+@router.callback_query(F.data.startswith("img:"))
+async def add_img(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":", 1)[1]
+    await state.update_data(key=key)
+    await cb.message.edit_text("🖼️ Gửi ảnh (có thể gửi nhiều ảnh)")
+    await state.set_state(Form.add_img)
 
-    elif cmd.startswith("text:"):
-        key = cmd.split(":")[1]
-        context.user_data["step"] = "wait_text"
-        context.user_data["key"] = key
-        await query.message.reply_text("✏️ Gửi nội dung mới:")
+@router.message(Form.add_img, F.photo)
+async def save_img(msg: Message, state: FSMContext):
+    key = (await state.get_data())["key"]
+    data[key]["images"].append(msg.photo[-1].file_id)
+    save_data()
+    await msg.reply("✅ Đã thêm ảnh")
 
-    elif cmd.startswith("img:"):
-        key = cmd.split(":")[1]
-        context.user_data["step"] = "wait_image"
-        context.user_data["key"] = key
-        await query.message.reply_text("🖼️ Gửi ảnh:")
+@router.callback_query(F.data.startswith("btn:"))
+async def add_btn(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":", 1)[1]
+    await state.update_data(key=key)
+    await cb.message.edit_text("🔘 Gửi nút:\nTên | https://link")
+    await state.set_state(Form.add_btn)
 
-    elif cmd.startswith("btn:"):
-        key = cmd.split(":")[1]
-        context.user_data["step"] = "wait_button"
-        context.user_data["key"] = key
-        await query.message.reply_text("🔘 Nhập: Tên nút | Link")
+@router.message(Form.add_btn)
+async def save_btn(msg: Message, state: FSMContext):
+    key = (await state.get_data())["key"]
+    if "|" not in msg.text:
+        return await msg.reply("❌ Sai định dạng")
+    name, url = map(str.strip, msg.text.split("|", 1))
+    data[key]["buttons"].append({"text": name, "url": url})
+    save_data()
+    await msg.reply("✅ Đã thêm nút", reply_markup=keyword_menu(key))
+    await state.clear()
 
-    elif cmd.startswith("del:"):
-        key = cmd.split(":")[1]
-        data.pop(key, None)
-        save_data(data)
-        await query.message.reply_text("🗑️ Đã xóa từ khóa")
-
-    elif cmd.startswith("preview:"):
-        key = cmd.split(":")[1]
-        await send_reply(query.message, key)
-
-# ================= TEXT ROUTER =================
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    chat_type = update.message.chat.type
-    user_id = update.effective_user.id
-
-    # ===== ADMIN SET (CHAT RIÊNG) =====
-    if chat_type == "private" and user_id == ADMIN_ID:
-        step = context.user_data.get("step")
-
-        if step == "wait_keyword":
-            key = msg.lower()
-            data[key] = {"text": "", "images": [], "buttons": []}
-            save_data(data)
-            context.user_data.clear()
-            await update.message.reply_text(
-                f"✅ Đã tạo từ khóa: {key}",
-                reply_markup=keyword_menu(key)
-            )
-            return
-
-        if step == "wait_text":
-            key = context.user_data["key"]
-            data[key]["text"] = msg
-            save_data(data)
-            context.user_data.clear()
-            await update.message.reply_text("✅ Đã lưu nội dung")
-            return
-
-        if step == "wait_button":
-            key = context.user_data["key"]
-            if "|" not in msg:
-                await update.message.reply_text("❌ Sai định dạng: Tên | Link")
-                return
-            name, link = msg.split("|", 1)
-            data[key]["buttons"].append({
-                "text": name.strip(),
-                "url": link.strip()
-            })
-            save_data(data)
-            context.user_data.clear()
-            await update.message.reply_text("✅ Đã thêm nút")
-            return
-
-    # ===== AUTO REPLY (PRIVATE + GROUP) =====
-    key = msg.lower()
-    if key in data:
-        await send_reply(update.message, key)
-
-# ================= PHOTO =================
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if update.message.chat.type != "private":
-        return
-
-    if context.user_data.get("step") == "wait_image":
-        key = context.user_data["key"]
-        photo_id = update.message.photo[-1].file_id
-        data[key]["images"].append(photo_id)
-        save_data(data)
-        context.user_data.clear()
-        await update.message.reply_text("✅ Đã lưu ảnh")
-
-# ================= SEND REPLY =================
-async def send_reply(message, key):
+@router.callback_query(F.data.startswith("preview:"))
+async def preview(cb: CallbackQuery):
+    key = cb.data.split(":", 1)[1]
     item = data[key]
+    sent = []
 
-    if item["text"]:
-        await message.reply_text(item["text"])
-
-    for img in item["images"]:
-        await message.reply_photo(img)
-
-    if item["buttons"]:
-        kb = [
-            [InlineKeyboardButton(b["text"], url=b["url"])]
-            for b in item["buttons"]
-        ]
-        await message.reply_text(
-            "👇 Chọn:",
-            reply_markup=InlineKeyboardMarkup(kb)
+    if item["images"]:
+        m = await cb.message.reply_photo(
+            photo=item["images"][0],
+            caption=item["text"],
+            reply_markup=build_buttons(item["buttons"])
         )
+        sent.append(m)
 
-# ================= MAIN =================
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+        if len(item["images"]) > 1:
+            media = [InputMediaPhoto(img) for img in item["images"][1:]]
+            msgs = await cb.message.reply_media_group(media)
+            sent.extend(msgs)
+    else:
+        m = await cb.message.reply_text(
+            item["text"],
+            reply_markup=build_buttons(item["buttons"])
+        )
+        sent.append(m)
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    await asyncio.sleep(10)
+    for m in sent:
+        await m.delete()
 
-    print("🤖 Bot đang chạy...")
-    app.run_polling()
+@router.callback_query(F.data.startswith("del:"))
+async def delete_kw(cb: CallbackQuery):
+    key = cb.data.split(":", 1)[1]
+    data.pop(key, None)
+    save_data()
+    await cb.message.edit_text("🗑️ Đã xóa", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "back_admin")
+async def back_admin(cb: CallbackQuery):
+    await cb.message.edit_text("⚙️ Quản lý bot", reply_markup=admin_menu())
+
+# ================= AUTO REPLY =================
+@router.message()
+async def auto_reply(msg: Message):
+    if msg.chat.type == "private":
+        return
+    for key in data:
+        if key in msg.text:
+            item = data[key]
+            if item["images"]:
+                await msg.reply_photo(
+                    photo=item["images"][0],
+                    caption=item["text"],
+                    reply_markup=build_buttons(item["buttons"])
+                )
+            else:
+                await msg.reply_text(
+                    item["text"],
+                    reply_markup=build_buttons(item["buttons"])
+                )
+            break
+
+# ================= RUN =================
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
