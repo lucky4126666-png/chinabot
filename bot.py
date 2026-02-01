@@ -1,17 +1,17 @@
-import logging
+import os
 import sqlite3
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-API_TOKEN = "8582300335:AAFhTYOZzF7fnu6cynD0kXf0fLQkevR_W7c"
+# ====== CONFIG ======
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=API_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# ================== DATABASE ==================
-conn = sqlite3.connect("bot.db", check_same_thread=False)
+# ====== DB ======
+conn = sqlite3.connect("data.db")
 cur = conn.cursor()
 
 cur.execute("""
@@ -19,118 +19,155 @@ CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER,
     keyword TEXT,
-    reply_html TEXT,
+    response TEXT,
     image TEXT,
     buttons TEXT
 )
 """)
 conn.commit()
 
+# ====== UTILS ======
+def is_owner(user_id):
+    return user_id == OWNER_ID
 
-# ================== UTILS ==================
-def build_keyboard(buttons_text: str):
-    if not buttons_text:
+def build_buttons(raw):
+    if not raw:
         return None
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    rows = buttons_text.strip().split("\n")
-
-    for row in rows:
-        btns = []
-        for part in row.split("&&"):
-            if "-" in part:
-                text, url = part.split("-", 1)
-                btns.append(
-                    InlineKeyboardButton(
-                        text=text.strip(),
-                        url=url.strip()
-                    )
-                )
-        if btns:
-            kb.row(*btns)
+    kb = InlineKeyboardMarkup()
+    for line in raw.split("\n"):
+        if "|" in line:
+            text, url = line.split("|", 1)
+            kb.add(InlineKeyboardButton(text.strip(), url=url.strip()))
     return kb
 
-
-# ================== AUTO MESSAGE WHEN BOT ADDED ==================
-@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
-async def bot_added(msg: types.Message):
-    for user in msg.new_chat_members:
-        if user.id == (await bot.me).id:
-            await msg.reply(
-                "🤖 <b>N组防骗助手</b>\n\n"
-                "我已加入群组 ✅\n"
-                "发送关键词即可自动回复\n\n"
-                "请管理员私聊我添加关键词",
-            )
-
-
-# ================== ADD KEYWORD (PRIVATE) ==================
-@dp.message_handler(commands=["add"], chat_type=types.ChatType.PRIVATE)
-async def add_keyword(msg: types.Message):
-    """
-    Format:
-    /add
-    GROUP_ID
-    KEYWORD
-    HTML_REPLY
-    IMAGE(optional)
-    BUTTONS(optional)
-    """
-
-    text = msg.text.split("\n")
-    if len(text) < 4:
-        await msg.reply("❌ 格式错误")
+# ====== START (PRIVATE ONLY) ======
+@dp.message_handler(commands=["start"])
+async def start(msg: types.Message):
+    if msg.chat.type != "private":
+        return
+    if not is_owner(msg.from_user.id):
+        await msg.answer("⛔ Bạn không có quyền.")
         return
 
-    group_id = int(text[1].strip())
-    keyword = text[2].strip()
-    reply_html = text[3].strip()
-    image = text[4].strip() if len(text) > 4 else ""
-    buttons = text[5].strip() if len(text) > 5 else ""
+    text = (
+        "🤖 <b>BOT TỪ KHÓA</b>\n\n"
+        "• Quản lý từ khóa tự động\n"
+        "• Nội dung: văn bản / ảnh / nút\n"
+        "• Phản hồi trong group\n\n"
+        "<b>Lệnh:</b>\n"
+        "/add – thêm từ khóa\n"
+        "/list – danh sách\n"
+        "/del – xóa từ khóa\n"
+    )
+    await msg.answer(text)
+
+# ====== ADD KEYWORD ======
+@dp.message_handler(commands=["add"])
+async def add_keyword(msg: types.Message):
+    if msg.chat.type != "private" or not is_owner(msg.from_user.id):
+        return
+    await msg.answer(
+        "📌 <b>THÊM TỪ KHÓA</b>\n\n"
+        "Gửi theo format:\n\n"
+        "<code>GROUP_ID</code>\n"
+        "<code>TỪ_KHÓA</code>\n"
+        "<code>NỘI_DUNG_HTML</code>\n"
+        "<code>IMAGE (có thể trống)</code>\n"
+        "<code>NÚT: text|link (mỗi nút 1 dòng)</code>"
+    )
+
+@dp.message_handler(lambda m: m.chat.type=="private" and m.text and m.text.count("\n")>=4)
+async def save_keyword(msg: types.Message):
+    if not is_owner(msg.from_user.id):
+        return
+
+    lines = msg.text.split("\n")
+    group_id = int(lines[0].strip())
+    keyword = lines[1].strip()
+    response = lines[2].strip()
+    image = lines[3].strip() or None
+    buttons = "\n".join(lines[4:]).strip() or None
 
     cur.execute(
-        "INSERT INTO keywords (group_id, keyword, reply_html, image, buttons) VALUES (?,?,?,?,?)",
-        (group_id, keyword, reply_html, image, buttons)
+        "INSERT INTO keywords (group_id, keyword, response, image, buttons) VALUES (?,?,?,?,?)",
+        (group_id, keyword, response, image, buttons)
     )
     conn.commit()
 
-    await msg.reply("✅ 已保存关键词")
+    kb = build_buttons(buttons)
+    if image:
+        await msg.answer_photo(image, caption=response, reply_markup=kb)
+    else:
+        await msg.answer(response, reply_markup=kb)
 
+    await msg.answer("✅ Đã lưu & preview ở trên")
 
-# ================== GROUP MESSAGE HANDLER ==================
-@dp.message_handler(content_types=types.ContentTypes.TEXT)
-async def keyword_reply(msg: types.Message):
-    if msg.chat.type not in ["group", "supergroup"]:
+# ====== LIST ======
+@dp.message_handler(commands=["list"])
+async def list_kw(msg: types.Message):
+    if msg.chat.type != "private" or not is_owner(msg.from_user.id):
+        return
+    cur.execute("SELECT id, keyword, group_id FROM keywords")
+    rows = cur.fetchall()
+    if not rows:
+        await msg.answer("❌ Chưa có từ khóa")
+        return
+    text = "📋 <b>DANH SÁCH</b>\n\n"
+    for i,k,g in rows:
+        text += f"#{i} | <code>{k}</code> | {g}\n"
+    await msg.answer(text)
+
+# ====== DELETE ======
+@dp.message_handler(commands=["del"])
+async def delete_kw(msg: types.Message):
+    if msg.chat.type != "private" or not is_owner(msg.from_user.id):
+        return
+    try:
+        kid = int(msg.get_args())
+    except:
+        await msg.answer("❌ /del ID")
+        return
+    cur.execute("DELETE FROM keywords WHERE id=?", (kid,))
+    conn.commit()
+    await msg.answer("🗑️ Đã xóa")
+
+# ====== AUTO REPLY IN GROUP ======
+@dp.message_handler(lambda m: m.chat.type in ["group","supergroup"], content_types=types.ContentTypes.TEXT)
+async def auto_reply(msg: types.Message):
+    cur.execute(
+        "SELECT response, image, buttons FROM keywords WHERE group_id=? AND keyword=?",
+        (msg.chat.id, msg.text.strip())
+    )
+    row = cur.fetchone()
+    if not row:
         return
 
-    text = msg.text.strip()
+    response, image, buttons = row
+    kb = build_buttons(buttons)
 
-    cur.execute(
-        "SELECT keyword, reply_html, image, buttons FROM keywords WHERE group_id=?",
-        (msg.chat.id,)
-    )
-    rows = cur.fetchall()
+    if image:
+        await msg.answer_photo(image, caption=response, reply_markup=kb)
+    else:
+        await msg.answer(response, reply_markup=kb)
 
-    for keyword, reply_html, image, buttons in rows:
-        if keyword in text:
-            kb = build_keyboard(buttons)
+# ====== BOT ADDED TO GROUP ======
+@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
+async def bot_added(msg: types.Message):
+    for u in msg.new_chat_members:
+        if u.id == (await bot.me).id:
+            text = (
+                "🤖 <b>Bot đã được kích hoạt</b>\n\n"
+                "• Phản hồi theo từ khóa\n"
+                "• Nội dung do chủ bot cài\n"
+                "• Hỗ trợ HTML / ảnh / nút\n\n"
+                "⚙️ Cấu hình trong chat riêng"
+            )
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("📢 Kênh thông báo", url="https://t.me/gonggao")
+            )
+            await msg.answer(text, reply_markup=kb)
 
-            if image:
-                await bot.send_photo(
-                    msg.chat.id,
-                    photo=image,
-                    caption=reply_html,
-                    reply_markup=kb
-                )
-            else:
-                await bot.send_message(
-                    msg.chat.id,
-                    reply_html,
-                    reply_markup=kb
-                )
-            break
-
-
-# ================== START ==================
+# ====== RUN ======
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
